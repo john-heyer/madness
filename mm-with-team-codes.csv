@@ -1,0 +1,65 @@
+participant_name,team_name,seed,team_name_norm,team_code
+Scott,UConn,1,UConn,CONN
+Katz,Stetson,16,Stetson,STET
+Molloy,Florida Atlantic,8,Florida Atlantic,FAU
+John + Tyler,Northwestern,9,Northwestern,NU
+Eddie,San Diego St.,5,San Diego St,SDSU
+Rob,UAB,12,UAB,UAB
+Aaron,Auburn,4,Auburn,AUB
+Bobby + Derham,Yale,13,Yale,YALE
+Mike,BYU,6,BYU,BYU
+Dillon,Duquesne,11,Duquesne,DUQ
+Keav,Illinois,3,Illinois,ILL
+Nicolai,Morehead St.,14,Morehead St,MORE
+Mayer,Washington St.,7,Washington St,WSU
+Brey,Drake,10,Drake,DRKE
+Brandon,Iowa St.,2,Iowa St,ISU
+Meshi,South Dakota St.,15,South Dakota St,SDST
+Big Mike,North Carolina,1,North Carolina,UNC
+Colin,Wagner,16,Wagner,WAG
+Raggio,Mississippi St.,8,Mississippi St,MSST
+Germano,Michigan St.,9,Michigan St,MSU
+Gateson,Saint Mary's,5,Saint Mary,SMC
+Becker,Grand Canyon,12,Grand Canyon,GCU
+Dana,Alabama,4,Alabama,ALA
+Peralo,Charleston,13,Charleston,COFC
+Rosa,Clemson,6,Clemson,CLEM
+Combs,New Mexico,11,New Mexico,UNM
+Cimi,Baylor,3,Baylor,BAY
+Leff,Colgate,14,Colgate,COLG
+Healy,Dayton,7,Dayton,DAY
+Luke,Nevada,10,Nevada,NEV
+Kurta,Arizona,2,Arizona,ARIZ
+F-Cup,Long Beach St.,15,Long Beach St,LBSU
+Dillon (2),Houston,1,Houston,HOU
+Meshi (2),Longwood,16,Longwood,LONG
+Becker (2),Nebraska,8,Nebraska,NEB
+Gateson (2),Texas A&M,9,Texas A&M,TA&M
+Colin (2),Wisconsin,5,Wisconsin,WIS
+Katz (2),James Madison,12,James Madison,JMU
+Scott (2),Duke,4,Duke,DUKE
+Eddie (2),Vermont,13,Vermont,UVM
+John + Tyler (2),Texas Tech,6,Texas Tech,TTU
+Rosa (2),NC State,11,NC State,NCSU
+Cimi (2),Kentucky,3,Kentucky,UK
+Luke (2),Oakland,14,Oakland,OAK
+Molloy (2),Florida,7,Florida,FLA
+Bobby + Derham (2),Colorado,10,Colorado,COLO
+Rob (2),Marquette,2,Marquette,MARQ
+Mayer (2),Western Kentucky,15,Western Kentucky,WKU
+Brey (2),Purdue,1,Purdue,PUR
+Mike (2),Grambling,16,Grambling,GRAM
+Big Mike (2),Utah St.,8,Utah St,USU
+Dana (2),TCU,9,TCU,TCU
+Kurta (2),Gonzaga,5,Gonzaga,GONZ
+Germano (2),McNeese,12,McNeese,MCN
+Keav (2),Kansas,4,Kansas,KU
+Raggio (2),Samford,13,Samford,SAM
+Aaron (2),South Carolina,6,South Carolina,SC
+Healy (2),Oregon,11,Oregon,ORE
+F-Cup (2),Creighton,3,Creighton,CREI
+Combs (2),Akron,14,Akron,AKR
+Leff (2),Texas,7,Texas,TEX
+Peralo (2),Colorado St.,10,Colorado St,CSU
+Nicolai (2),Tennessee,2,Tennessee,TENN
+Brandon (2),Saint Peter's,15,Saint Peter,SPU
