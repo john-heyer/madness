@@ -269,6 +269,7 @@ class Bracket:
 
     
     def process_indefinitely(self):
+        # TODO: rewrite to follow logic of pre_populate_events above!
         while self.events_to_process:
             # if there are any games that have started, query for all scores every ~1 minute
             events_in_progress = self.events_in_progress()
