@@ -1,5 +1,6 @@
 import time
 import math
+from statistics import mode
 
 import pandas as pd
 from collections import deque, defaultdict
@@ -8,21 +9,31 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 import requests
+import pickle
+import os
+
 
 import threading
 import logging
 
+# configure logger
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('[%(asctime)s - %(name)s - %(levelname)s] %(message)s')
+console_handler.setFormatter(formatter)
+LOGGER.addHandler(console_handler)
 
 
 class Team:
 
-    def __init__(self, name, seed, code_name, original_position):
+    def __init__(self, name, seed, code_name, odds_api_name, original_position):
         self.name = name
         self.seed = seed
         self.code_name = code_name
+        self.odds_api_name = odds_api_name
         self.original_position = original_position
-        self.espn_team_name = None
-
 
 class Participant:
 
@@ -31,9 +42,6 @@ class Participant:
         self.team = team
         self.is_in = True
         self.history = []
-
-    def set_team(self, name):
-        self.name = name
 
     def to_str(self):
         return f"Name: {self.name}\tTeam: {self.team.name}\tStill In? {self.is_in}"
@@ -69,11 +77,12 @@ class Event:
 
         # to populate as events occur:
         # spread info
-        self.current_spread = None
-        self.opening_spread = None
+        self.spread = None
+        self.spread_final = False
+
         # espn game info: events can have 1 of 4 states:
-        # ['STATUS_SCHEDULED', 'STATUS_FINAL', 'STATUS_IN_PROGRESS', and None if it is TBD]
-        self.status = None
+        # 'STATUS_SCHEDULED', 'STATUS_FINAL', 'STATUS_IN_PROGRESS', 'TBD' (by default)
+        self.status = 'TBD'
         self.team_to_score = {}  # dictionary of team code to integer
         self.is_complete = False
         self.winning_participant = None
@@ -102,7 +111,7 @@ class Event:
         current_time = datetime.now()
         time_difference = self.estimated_start_time - current_time
         return time_difference <= timedelta(hours=1) 
-    
+
     def update(self, api_event_data):
         self.status = api_event_data['status']['type']['name']
         self.estimated_start_time = datetime.strptime(api_event_data['date'], '%Y-%m-%dT%H:%MZ')
@@ -119,15 +128,27 @@ class Event:
             self.team_to_score = team_to_score
         self.is_complete = api_event_data['status']['type']['completed']
         if self.is_complete:
-            if self.home_participant.team.code_name == winning_team_code:
-                self.winning_participant = self.home_participant
-            else:
-                self.winning_participant = self.away_participant
-            self.winning_team = self.winning_participant.team
+            self.winning_participant = self.determine_winning_participant()
+            # optionally update the winning participant's team if their team lost but covered
+            losing_team = self.home_participant.team if self.winning_participant is self.away_participant else self.away_participant.team
+            if self.winning_participant.team.code_name != winning_team_code:
+                self.winning_participant.team = losing_team
+            self.winning_team = winning_team_code
             if self.parent is not None:
                 self.parent.update_from_child(self)
-            # TODO: optionally update the winning participant's team
-        
+    
+    def determine_winning_participant(self):
+        home_score = float(self.team_to_score[self.home_participant.team.code_name])
+        home_score_delta = self.spread[self.home_participant.team.odds_api_name]
+        away_score = float(self.team_to_score[self.away_participant.team.code_name])
+        if (home_score + home_score_delta) > away_score:
+            return self.home_participant
+        elif (home_score + home_score_delta) < away_score:
+            return self.away_participant
+        else:
+            # spread was even, return underdog
+            return self.home_participant if home_score_delta > 0 else self.away_participant  
+    
     def update_from_child(self, child):
         assert child.winning_participant is not None
         # update either the left or right child depending on which one was provided upon completion
@@ -160,10 +181,21 @@ class Event:
         else:
             away_score = 0
             away_str = f"Winner of Event # {self.right.event_id}"
-        key_value_strings = (f'Event #: {self.event_id}', f'{home_str} vs. {away_str}', f'Score: {home_score} - {away_score}')
+
+        spread_str = ""
+        if self.spread is not None:
+            for k, v in self.spread.items():
+                if v < 0:
+                    spread_str = f"{k} {v}"
+        key_value_strings = (f'Event #: {self.event_id}', f'{home_str} vs. {away_str}',
+                             f'Score: {home_score} - {away_score}', f'Spread: {spread_str}',
+                             f'Status: {self.status}',
+                             )
+        status_to_color = {'STATUS_IN_PROGRESS': 'orange', 'STATUS_SCHEDULED': 'black', 'STATUS_FINAL': 'gray', 'TBD': 'purple'}
+        status_color = status_to_color[self.status] if self.status in status_to_color else 'black'
         if as_html:
             html_str = ""
-            for color, kv_string in zip(['red', 'blue', 'green'], key_value_strings):
+            for color, kv_string in zip(['red', 'blue', 'green', status_color, status_color], key_value_strings):
                 html_str += f'<span style="color: {color};">{kv_string}</span>&nbsp;&nbsp;'
             return html_str
         else:
@@ -177,10 +209,12 @@ class Bracket:
         TEAM_NAME_COL = 'team_name'
         SEED_COL = 'seed'
         CODE_NAME_COL = 'team_code'
+        ODDS_API_TEAM_NAME_COL = 'odds_api_team_name'
 
     REQUIRED_KEYS = [key.value for key in BracketCSVColumn]
+    SPREAD_CACHE_FILE = './.spread_cache.pkl'
 
-    def __init__(self, participants, odds_api_key):
+    def __init__(self, participants, odds_api_key, cache_spread=True):
         # validate bracket -- currently only works with "even" brackets (e.g., 2, 4, 8, ... participants)
         assert math.log2(len(participants)).is_integer(), f'Only "evenly sized brackets (those with 4, 8, 16 ... 2^n participants.) ' +\
             f'are supported, but you have entered {len(participants)} participants.'
@@ -213,6 +247,7 @@ class Bracket:
 
         # failure mode tracking
         self.calls_to_espn = 0
+        self.calls_to_odds_api = 0
         self.successfully_updating = True
         self.last_successful_update = None
         self.last_attempted_update = None
@@ -221,23 +256,27 @@ class Bracket:
         self._stop_event = threading.Event()
         self.update_thread = threading.Thread(target=self.process_indefinitely)
         self.update_thread.daemon = True  # Set the thread as daemon so it stops when we interrupt the process
-        self.logger = self._configure_logger()
 
-    def _configure_logger(self):
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        formatter = logging.Formatter('[%(asctime)s - %(name)s - %(levelname)s] %(message)s')
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-        return logger
+        # Read/write odds from/to disk when available to avoid extra api calls
+        # and slow startup time to pre-populate bracket. Will only cache spreads that are
+        # final, i.e., games that have at least started alread. Useful when debugging :)
+        if cache_spread:
+            self.cache_spread = True
+            LOGGER.info("Using spread cache!")
+            if os.path.exists(self.SPREAD_CACHE_FILE):
+                LOGGER.info(f"Existing cache file found at: {self.SPREAD_CACHE_FILE}")
+                with open(self.SPREAD_CACHE_FILE, 'rb') as f:
+                    self.matchup_to_spread = pickle.load(f)
+            else:
+                LOGGER.info(f"No cache file found at: {self.SPREAD_CACHE_FILE}. Creating one!")
+                self.matchup_to_spread = {}
+        else:
+            self.cache_spread = False
     
     def get_state_metadata(self):
         return {
             'calls_to_epsn': self.calls_to_espn,
+            'calls_to_odds_api': self.calls_to_odds_api,
             'is_successfully_updating': self.successfully_updating,
             'last_successful_update': str(self.last_successful_update),
             'last_attempted_update': str(self.last_attempted_update),
@@ -249,6 +288,11 @@ class Bracket:
     def events_in_progress(self):
         return [event for event in self.events_to_process if event.status == 'STATUS_IN_PROGRESS']
 
+    def write_spreads_to_disk(self):
+        if self.cache_spread:
+            with open(self.SPREAD_CACHE_FILE, 'wb') as f:
+                pickle.dump(self.matchup_to_spread, f)
+    
     def connect_bracket(self, ordered_events):
         events_in_round = ordered_events
         all_events = []
@@ -277,7 +321,7 @@ class Bracket:
             f'https://site.api.espn.com/' +\
             f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date_str}'
         ).json()
-        self.logger.info(f'Data for {len(data["events"])} events returned.')
+        LOGGER.info(f'Data for {len(data["events"])} events returned.')
         # pre-process this data to make it query-able via two team codes
         event_data_by_matchup_tuple = {}
         for event_data in data['events']:
@@ -289,8 +333,66 @@ class Bracket:
             event_data_by_matchup_tuple[matchup_tuple] = event_data
         return event_data_by_matchup_tuple
 
+    def set_event_spread(self, event, date_str):
+        if self.cache_spread and event.matchup_tuple in self.matchup_to_spread:
+                spread = self.matchup_to_spread[event.matchup_tuple]
+        else:
+            # call odds api
+            spread = self.get_spread(event, date_str)
+        event.spread = spread
+            
+        # if this event has already began, we can consider this spread final 
+        if event.status == 'STATUS_FINAL' or event.status == 'STATUS_IN_PROGRESS':
+                event.spread_final = True
+        
+        # maybe write new spread to cache
+        if self.cache_spread:
+            if event.matchup_tuple not in self.matchup_to_spread and spread is not None:
+            # avoid caching spreads that were not found for some reason, just incase...
+                self.matchup_to_spread[event.matchup_tuple] = spread
+                self.write_spreads_to_disk()
+
+
+    def get_spread(self, event, date_str):
+        # determine if odds api event matches our event
+        def team_match(game, event):
+            if game['home_team'] == event.home_participant.team.odds_api_name:
+                # ensure away matches away
+                if game['away_team'] == event.away_participant.team.odds_api_name:
+                    return True
+            # away team matches home team
+            if game['away_team'] == event.home_participant.team.odds_api_name:
+                # ensure away matches home
+                if game['home_team'] == event.away_participant.team.odds_api_name:
+                    return True
+            return False
+        
+        # given a list of spreads across bookmakers, return the most common spread     
+        def spread_mode(spreads):
+            spread_point_outcomes = [spread['outcomes'][0]['point'] for spread in spreads]
+            point_spread = mode(spread_point_outcomes)
+            return {
+                spreads[0]['outcomes'][0]['name']: point_spread,  # home
+                spreads[0]['outcomes'][1]['name']: -point_spread,  # away
+            }
+
+        # using historical odds api everywhere as it seems to still work for future events, in which case grabs the latest snapshot
+        spreads_past = requests.get(
+            f'https://api.the-odds-api.com/v4/historical/sports/basketball_ncaab/odds?' +\
+            f'apiKey={self.odds_api_key}&regions=us&markets=spreads&dateFormat=iso&oddsFormat=american&date={date_str}'
+        ).json()
+        self.calls_to_odds_api += 1
+        spreads = []
+        for game in spreads_past['data']:
+            # espn_to_odds_names = espn_team_to_odds_team(game, event)
+            if team_match(game, event):
+                for bookmaker in game['bookmakers']:
+                    spreads.append(bookmaker['markets'][0])
+                break
+        return spread_mode(spreads) if len(spreads) > 0 else None
     
     def pre_populate_events(self):
+        # TODO: replace this loop with process_indefinitely to backfill
         # query for data from march of the current year
         year = datetime.now().year
         # Wanted to query march + april with {year}0301-{year}0501, but this breaks things
@@ -304,13 +406,29 @@ class Bracket:
         # it returns games in the opposite order (most recent first), but we didn't hit the 100 game
         # limit, so I have no idea why the "month only query" doesn't return those earlier games 
         # that break things ...
-        event_data_by_matchup_tuple = self.get_score_data(f'{year}03') 
+        event_data_by_matchup_tuple = self.get_score_data(f'{year}03')
         # maintain a queue of events that have home + away teams determined
         determined_events = deque([event for event in self.events_to_process if event.matchup_determined])
         while len(determined_events) > 0:
             event = determined_events.popleft()
             if event.matchup_tuple in event_data_by_matchup_tuple:
-                event.update(event_data_by_matchup_tuple[event.matchup_tuple])
+                event_data = event_data_by_matchup_tuple[event.matchup_tuple]
+                # FIXME: if the game's available in ESPN much before odds-api, will this result in tons of API calls?
+                if event.spread is None:
+                    # populate initial spread 
+                    time_before_game = (datetime.strptime(event_data['date'], '%Y-%m-%dT%H:%MZ') - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    self.set_event_spread(event, time_before_game)
+                # maybe update
+                old_status = event.status
+                event.update(event_data)
+                if old_status != event.status:
+                    LOGGER.info(f'Status update for event from {old_status} to {event.status}.\n{event.to_str()}')
+                    # update final spread if game moves to in progress
+                    if event.status == 'STATUS_IN_PROGRESS':
+                        time_before_game = (event.estimated_start_time - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        self.set_event_spread(event, time_before_game)
+
+                        
                 # the above update function will update the parent once games are over,
                 # so let's check if the next round's game is determined and add it to the queue if so
                 if event.parent.matchup_determined:
@@ -349,26 +467,44 @@ class Bracket:
         self.update_thread.start()
     
     def process_indefinitely(self):
-        while self.events_to_process:
+        while self.events_to_process and not self._stop_event.is_set():
             try:
                 if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested
                     current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())
                     for event in self.events_to_process:
                         # update
                         if event.matchup_determined and event.matchup_tuple in current_event_data_by_matchup_tuple:
-                            event.update(current_event_data_by_matchup_tuple[event.matchup_tuple])
+                            event_data = current_event_data_by_matchup_tuple[event.matchup_tuple]
+                            # FIXME: if the game's available in ESPN much before odds-api, will this result in tons of API calls?
+                            if event.spread is None:
+                                # populate initial spread 
+                                time_before_game = (datetime.strptime(event_data['date'], '%Y-%m-%dT%H:%MZ') - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                                self.set_event_spread(event, time_before_game)
+                            # maybe update    
+                            old_status = event.status
+                            event.update(event_data)
+                            if old_status != event.status:
+                                LOGGER.info(f'Status update for event from {old_status} to {event.status}.\n{event.to_str()}')
+                                # update final spread if game moves to in progress
+                                if event.status == 'STATUS_IN_PROGRESS':
+                                    time_before_game = (event.estimated_start_time - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                                    self.set_event_spread(event, time_before_game)
                         if event.is_complete:
                             self.events_to_process.remove(event)
                     self.calls_to_espn += 1
                     self.successfully_updating = True
                     self.last_successful_update = datetime.now()
-            except Exception as e:
+            except Exception:
                 self.successfully_updating = False
-                self.logger.exception('Oh fuck...')
+                LOGGER.exception('Oh fuck...')
             
             self.last_attempted_update = datetime.now()
-            time.sleep(60)  # chill for a min
-        self.logger.info('Bracket complete!')
+            # Sleep for 60 seconds, but check for stop event every second
+            for _ in range(60):
+                if self._stop_event.is_set():
+                    break
+                time.sleep(1)
+        LOGGER.info('Bracket complete!')
         return
 
     def round_description(self, round):
@@ -424,7 +560,8 @@ class Bracket:
                 row[cls.BracketCSVColumn.TEAM_NAME_COL.value],
                 row[cls.BracketCSVColumn.SEED_COL.value],
                 row[cls.BracketCSVColumn.CODE_NAME_COL.value],
-                original_position=i,
+                row[cls.BracketCSVColumn.ODDS_API_TEAM_NAME_COL.value],
+            original_position=i,
             )
             participant = Participant(row[cls.BracketCSVColumn.PARTICIPANT_NAME_COL.value], team)
             participants.append(participant)

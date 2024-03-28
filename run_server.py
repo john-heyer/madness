@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
     
     yield  # hold up until we done
     bracket.stop()
+    bracket.write_spreads_to_disk()
 
 
 app = FastAPI(lifespan=lifespan)
