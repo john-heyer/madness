@@ -1,15 +1,17 @@
 import time
 import math
 
-import argparse
 import pandas as pd
-from collections import deque
+from collections import deque, defaultdict
 
 from datetime import datetime, timedelta
 from enum import Enum
 
-import ipdb
 import requests
+
+import threading
+import logging
+
 
 
 class Team:
@@ -19,6 +21,7 @@ class Team:
         self.seed = seed
         self.code_name = code_name
         self.original_position = original_position
+        self.espn_team_name = None
 
 
 class Participant:
@@ -76,6 +79,7 @@ class Event:
         self.winning_participant = None
         self.winning_team = None
 
+
         # example format: datetime(2024, 4, 1, 14, 0)  for event on on April 1, 2024, at 14:00
         self.estimated_start_time = None
 
@@ -95,13 +99,8 @@ class Event:
     
     @property
     def is_starting_within_the_hour(self):
-        # Get the current time
         current_time = datetime.now()
-
-        # Calculate the difference between the current time and the event start time
         time_difference = self.estimated_start_time - current_time
-
-        # Check if the difference is less than or equal to 1 hour
         return time_difference <= timedelta(hours=1) 
     
     def update(self, api_event_data):
@@ -125,7 +124,9 @@ class Event:
             else:
                 self.winning_participant = self.away_participant
             self.winning_team = self.winning_participant.team
-            self.parent.update_from_child(self)
+            if self.parent is not None:
+                self.parent.update_from_child(self)
+            # TODO: optionally update the winning participant's team
         
     def update_from_child(self, child):
         assert child.winning_participant is not None
@@ -136,7 +137,7 @@ class Event:
             assert child is self.right
             self.away_participant = child.winning_participant
 
-    def to_str(self):
+    def to_str(self, as_html=False):
         if self.home_participant is not None:
             home_team = self.home_participant.team.name
             home_player = self.home_participant.name
@@ -159,8 +160,14 @@ class Event:
         else:
             away_score = 0
             away_str = f"Winner of Event # {self.right.event_id}"
-        return f'Event #: {self.event_id}\tRound: {self.round}' +\
-            f'\tHome: {home_str}\tAway: {away_str}\tScore: {home_score} - {away_score}'
+        key_value_strings = (f'Event #: {self.event_id}', f'{home_str} vs. {away_str}', f'Score: {home_score} - {away_score}')
+        if as_html:
+            html_str = ""
+            for color, kv_string in zip(['red', 'blue', 'green'], key_value_strings):
+                html_str += f'<span style="color: {color};">{kv_string}</span>&nbsp;&nbsp;'
+            return html_str
+        else:
+            return '\t'.join(key_value_strings)
 
 
 class Bracket:
@@ -173,12 +180,13 @@ class Bracket:
 
     REQUIRED_KEYS = [key.value for key in BracketCSVColumn]
 
-    def __init__(self, participants):
+    def __init__(self, participants, odds_api_key):
         # validate bracket -- currently only works with "even" brackets (e.g., 2, 4, 8, ... participants)
         assert math.log2(len(participants)).is_integer(), f'Only "evenly sized brackets (those with 4, 8, 16 ... 2^n participants.) ' +\
             f'are supported, but you have entered {len(participants)} participants.'
         assert len(participants) >= 4, f"Must have at least 4 participants, but you have {len(participants)}."
         self.participants = participants
+        self.odds_api_key = odds_api_key
 
         # a bracket will be represented by a binary tree, and will be processed from the "bottom up" as games occur
         self.n_rounds = int(math.log2(len(participants)))
@@ -203,95 +211,43 @@ class Bracket:
         # print(f'\n\n{len(self.events_to_process)}\n\n')
         self.bracket_root = self.events_to_process[-1]  # last event will be the "root" or championship
 
+        # failure mode tracking
+        self.calls_to_espn = 0
+        self.successfully_updating = True
+        self.last_successful_update = None
+        self.last_attempted_update = None
+
+        # dedicated thread for the loop that updates bracket state indefinitely
+        self._stop_event = threading.Event()
+        self.update_thread = threading.Thread(target=self.process_indefinitely)
+        self.update_thread.daemon = True  # Set the thread as daemon so it stops when we interrupt the process
+        self.logger = self._configure_logger()
+
+    def _configure_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.INFO)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+
+        formatter = logging.Formatter('[%(asctime)s - %(name)s - %(levelname)s] %(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        return logger
+    
+    def get_state_metadata(self):
+        return {
+            'calls_to_epsn': self.calls_to_espn,
+            'is_successfully_updating': self.successfully_updating,
+            'last_successful_update': str(self.last_successful_update),
+            'last_attempted_update': str(self.last_attempted_update),
+            'total_games_in_bracket': self.unique_events,
+            'total_games_incomplete': len(self.events_to_process),
+        }
+
+    @property
     def events_in_progress(self):
-        events_in_progress = []
-        for event in self.events_to_process:
-            if event.is_scheduled:
-                # must be a "resolved" matchup rather than one TBD in the future
-                if event.has_started:
-                    events_in_progress.append(event)
-        return events_in_progress
-
-    def update_ongoing_events(self, events_in_progress):
-        # call scores API
-        # update scores
-        # check if complete and mark finished
-        # update final score, winning team, winning participant
-        # update parent node by setting its left/right
-        # optionally update the winning participant's team
-        # remove from self.events_to_process
-        pass
-
-    def check_if_events_have_started(self):
-        events_soon = []
-        for event in self.events_to_process:
-            if event.is_scheduled:
-                # must be a "resolved" matchup rather than one TBD in the future
-                if event.is_starting_within_the_hour:
-                    events_soon.append(event)
-        # call scores API
-        api_result = dict()  # TODO
-        for event in events_soon:
-            home_team = event.home_participant.team.name
-            if home_team in api_result:
-                if api_result[home_team]['state'] == 'in_progress':
-                    event.has_started = True
-                    # update score 
-
-    
-    def pre_populate_events(self):
-        # assumes this is run in march...
-        year = datetime.now().year
-        data_from_march = requests.get(
-            f'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={year}03'
-        ).json()
-        # pre-process this data to make it query-able via two team codes
-        event_data_by_matchup_tuple = {}
-        for event_data in data_from_march['events']:
-            matchup_tuple = tuple(sorted(event_data['shortName'].split(' VS ')))
-            if matchup_tuple == ('TBD', 'TBD'):
-                continue
-            assert len(matchup_tuple) == 2
-            assert matchup_tuple not in event_data_by_matchup_tuple  # teams only play once in march or the tournament
-            event_data_by_matchup_tuple[matchup_tuple] = event_data
-        determined_events = deque([event for event in self.events_to_process if event.matchup_determined])
-        # events will move to whatever state exists in the api. We will add more determined events to this!
-        while len(determined_events) > 0:
-            event = determined_events.popleft()
-            matchup_tuple = event.matchup_tuple
-            if matchup_tuple in event_data_by_matchup_tuple:
-                event.update(event_data_by_matchup_tuple[matchup_tuple])
-                # the above update function will update the parent once games are over,
-                # so let's check if the next round's game is determined and add it to the queue if so
-                if event.parent.matchup_determined:
-                    determined_events.append(event.parent)
-        return
-
-    
-    def process_indefinitely(self):
-        # TODO: rewrite to follow logic of pre_populate_events above!
-        while self.events_to_process:
-            # if there are any games that have started, query for all scores every ~1 minute
-            events_in_progress = self.events_in_progress()
-            if len(events_in_progress) > 0:
-                self.update_ongoing_events(events_in_progress)
-                # TODO - update events in progress based on the api result from the above, in case we missed any?
-                time.sleep(60)  # sleep for 1 minutes before checking for score updates again
-            # otherwise, let's check if we should move any games to "in progress"
-            else:
-                self.check_if_events_have_started()  # is this where we should check for opening lines?
-                time.sleep(5 * 60)  # make this a much slower loop (5 mins) 
-
-            for event in self.events_to_process():
-                # 
-                if event.matchup_determined:
-                    event.process()
-                    # event.check_score()
-                    # if event.is_complete()
-                    #     event.update_winner()
-                    if event.is_complete():
-                        pass  # TODO remove from list
-
+        return [event for event in self.events_to_process if event.status == 'STATUS_IN_PROGRESS']
 
     def connect_bracket(self, ordered_events):
         events_in_round = ordered_events
@@ -311,7 +267,109 @@ class Bracket:
                 next_round_events.append(parent_event)
             events_in_round = next_round_events
         assert len(events_in_round) == 1  # only root node (championship) should remain
-        return all_events + events_in_round
+        return deque(all_events + events_in_round)
+
+    def get_score_data(self, date_str=None):
+        """
+        date_str in format "YYYYMMDD"
+        """
+        data = requests.get(
+            f'https://site.api.espn.com/' +\
+            f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date_str}'
+        ).json()
+        self.logger.info(f'Data for {len(data["events"])} events returned.')
+        # pre-process this data to make it query-able via two team codes
+        event_data_by_matchup_tuple = {}
+        for event_data in data['events']:
+            matchup_tuple = tuple(sorted(event_data['shortName'].split(' VS ')))
+            if matchup_tuple == ('TBD', 'TBD'):
+                continue
+            assert len(matchup_tuple) == 2
+            assert matchup_tuple not in event_data_by_matchup_tuple  # teams should only play once in the tournament
+            event_data_by_matchup_tuple[matchup_tuple] = event_data
+        return event_data_by_matchup_tuple
+
+    
+    def pre_populate_events(self):
+        # query for data from march of the current year
+        year = datetime.now().year
+        # Wanted to query march + april with {year}0301-{year}0501, but this breaks things
+        # because some earlier games are returned with shortName format "X @ Y" instead of 
+        # the assumed "X VS Y". Could fix, but the larger issue is the weird behavior in the
+        # set of games returned. I though querying for "202403" returned all games in march, 
+        # but for some reason it returns only games from 3/20-3/30 right now (62 games).
+        # On the other hand, querying "20240301-20240501" hits the apparent "limit" of 100 games, but
+        # returns games from 3/01 - 3/09. I guess when a range is provided, it returns the games in
+        # order of occurrance until the limit is hit. It may be that when only a month is provided,
+        # it returns games in the opposite order (most recent first), but we didn't hit the 100 game
+        # limit, so I have no idea why the "month only query" doesn't return those earlier games 
+        # that break things ...
+        event_data_by_matchup_tuple = self.get_score_data(f'{year}03') 
+        # maintain a queue of events that have home + away teams determined
+        determined_events = deque([event for event in self.events_to_process if event.matchup_determined])
+        while len(determined_events) > 0:
+            event = determined_events.popleft()
+            if event.matchup_tuple in event_data_by_matchup_tuple:
+                event.update(event_data_by_matchup_tuple[event.matchup_tuple])
+                # the above update function will update the parent once games are over,
+                # so let's check if the next round's game is determined and add it to the queue if so
+                if event.parent.matchup_determined:
+                    determined_events.append(event.parent)
+                if event.is_complete:
+                    self.events_to_process.remove(event)
+        return
+
+    @staticmethod
+    def current_date_range_str():
+        """
+        Given the current time, we need to query for games yesterday/today/tomorrow,
+        to avoid any timezone issues. The ESPN API expects a string formatted like this:
+        YYYYMMDD-YYYYMMDD, but results are exclusive of the end date, so we format  the
+        range from yesterday to 2 days from now.
+        """
+        current_date = datetime.now().date()
+        start_date = current_date - timedelta(days=1)
+        end_date = current_date + timedelta(days=2)
+        start_date_str = start_date.strftime("%Y%m%d")
+        end_date_str = end_date.strftime("%Y%m%d")
+        return f"{start_date_str}-{end_date_str}"
+    
+    def should_query(self):
+        events_starting_soon = [
+            event for event in self.events_to_process if event.is_starting_within_the_hour
+            and event.status == 'STATUS_SCHEDULED'
+        ]
+        return len(self.events_in_progress) > 0 and len(events_starting_soon) > 0
+    
+    def stop(self):
+        self._stop_event.set()
+        self.update_thread.join()
+    
+    def start(self):
+        self.update_thread.start()
+    
+    def process_indefinitely(self):
+        while self.events_to_process:
+            try:
+                if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested
+                    current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())
+                    for event in self.events_to_process:
+                        # update
+                        if event.matchup_determined and event.matchup_tuple in current_event_data_by_matchup_tuple:
+                            event.update(current_event_data_by_matchup_tuple[event.matchup_tuple])
+                        if event.is_complete:
+                            self.events_to_process.remove(event)
+                    self.calls_to_espn += 1
+                    self.successfully_updating = True
+                    self.last_successful_update = datetime.now()
+            except Exception as e:
+                self.successfully_updating = False
+                self.logger.exception('Oh fuck...')
+            
+            self.last_attempted_update = datetime.now()
+            time.sleep(60)  # chill for a min
+        self.logger.info('Bracket complete!')
+        return
 
     def round_description(self, round):
         teams_left_to_round_name = {
@@ -325,25 +383,40 @@ class Bracket:
         else:
             return f"Round of {teams_left}"
     
-    def pretty_print(self):
+    
+    def to_events_by_round(self):
+        events_by_round = defaultdict(list)
         queue = deque()
         queue.append(self.bracket_root)
-        current_round = float('inf')
         while queue:
             event = queue.popleft()
-            if event.round < current_round:
-                print('\n\n')
-                print('=' * 50 + self.round_description(event.round) + '=' * 50)
-                current_round = event.round
-            print(event.to_str())
+            events_by_round[event.round].append(event)
             if event.left:
                 queue.append(event.left)
             if event.right:
                 queue.append(event.right)
+        assert all([round in events_by_round for round in range(1, self.n_rounds+1)])
+        return events_by_round
+
+    def to_str(self, as_html=False):
+        """
+        Pop all events and concatenate line-delimited strings by round.
+        """
+        bracket_as_str = ""
+        events_by_round = self.to_events_by_round()
+        for round in range(self.n_rounds, 0, -1):
+            bracket_as_str += '\n' * 3 + '=' * 50 + self.round_description(round) + '=' * 50 + '\n'
+            for event in events_by_round[round]:
+                bracket_as_str += event.to_str(as_html=as_html) + '\n'
+        return bracket_as_str
+    
+    def pretty_print(self):
+        print(self.to_str())   
 
     @classmethod
-    def from_csv(cls, team_csv):
-        participant_df = pd.read_csv(team_csv)
+    def from_config(cls, config):
+        odds_api_key = config['ODDS_API_KEY']
+        participant_df = pd.read_csv(config['TEAM_CSV_PATH'])
         assert all([key in participant_df.columns for key in cls.REQUIRED_KEYS])
         participants = []
         for i, row in participant_df.iterrows():
@@ -355,31 +428,4 @@ class Bracket:
             )
             participant = Participant(row[cls.BracketCSVColumn.PARTICIPANT_NAME_COL.value], team)
             participants.append(participant)
-        return cls(participants)
-
-
-
-
-
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description='Construct bracket from CSV file')
-    parser.add_argument('input_teams', help=f'Path to a CSV file with (at least) these columns: {Bracket.REQUIRED_KEYS}')
-    args = parser.parse_args()
-
-    bracket = Bracket.from_csv(args.input_teams)
-    bracket.pretty_print()
-    
-    # pre-populate to fill games that have already happened
-    bracket.pre_populate_events()
-    print(f'\nWith events populated:')
-    bracket.pretty_print()
-
-    # for debugging
-    import ipdb
-    participant_df = pd.read_csv(args.input_teams)
-    ipdb.set_trace()
-
-    # while True:
-        # update bracket
-        # pass
+        return cls(participants, odds_api_key)
