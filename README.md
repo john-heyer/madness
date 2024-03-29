@@ -16,7 +16,7 @@ The server is setup using [Fast API](https://fastapi.tiangolo.com/#run-it), and 
 uvicorn run_server:app
 ```
 
-Navigate to http://127.0.0.1:8000/print-bracket to view the current bracket! It currently makes an API call to ESPN every minute, and only calls odds API for each game once upon scheduling, and again as soon as the game begins to try to get the opening spread.
+Navigate to http://127.0.0.1:8000/api/print-bracket to view the current bracket! It currently makes an API call to ESPN every minute, and only calls odds API for each game once upon scheduling, and again as soon as the game begins to try to get the opening spread.
 
 
 ## How do we get scores and lines?

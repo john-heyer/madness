@@ -468,9 +468,11 @@ class Bracket:
     
     def process_indefinitely(self):
         while self.events_to_process and not self._stop_event.is_set():
-            try:
-                if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested
+            if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested 
+                events_to_remove = []
+                try:
                     current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())
+                    events_to_remove = []
                     for event in self.events_to_process:
                         # update
                         if event.matchup_determined and event.matchup_tuple in current_event_data_by_matchup_tuple:
@@ -490,15 +492,22 @@ class Bracket:
                                     time_before_game = (event.estimated_start_time - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
                                     self.set_event_spread(event, time_before_game)
                         if event.is_complete:
-                            self.events_to_process.remove(event)
+                            events_to_remove.append(event)
+                    
+                    # count successful iterations
                     self.calls_to_espn += 1
                     self.successfully_updating = True
                     self.last_successful_update = datetime.now()
-            except Exception:
-                self.successfully_updating = False
-                LOGGER.exception('Oh fuck...')
+                
+                except Exception:
+                    self.successfully_updating = False
+                    LOGGER.exception('Oh fuck...')
             
-            self.last_attempted_update = datetime.now()
+                # remove events that completed this iteration
+                for event in events_to_remove:
+                    self.events_to_process.remove(event)
+
+                self.last_attempted_update = datetime.now()
             # Sleep for 60 seconds, but check for stop event every second
             for _ in range(60):
                 if self._stop_event.is_set():

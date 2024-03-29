@@ -30,10 +30,9 @@ async def lifespan(app: FastAPI):
     bracket.stop()
     bracket.write_spreads_to_disk()
 
-
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/print-bracket")
+@app.get("/api/print-bracket")
 def get_bracket_as_string():
 
     metadata_str = 'CURRENT STATE:\n' + json.dumps(bracket.get_state_metadata(), indent=4) + '\n'
