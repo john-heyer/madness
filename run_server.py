@@ -42,3 +42,9 @@ def get_bracket_as_string():
         string_to_print.replace("\n", "<br>").replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
     )
     return HTMLResponse(content=html_content, status_code=200)
+
+
+@app.get("/api/bracket-as-json")
+def get_bracket_json():
+    to_return = bracket.model_dump(mode='json', exclude='participants')  # participants is redundant
+    return JSONResponse(content=to_return, status_code=200)

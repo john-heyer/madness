@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 import math
 from statistics import mode
@@ -12,7 +14,8 @@ import requests
 import pickle
 import os
 
-
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Literal
 import threading
 import logging
 
@@ -26,71 +29,75 @@ console_handler.setFormatter(formatter)
 LOGGER.addHandler(console_handler)
 
 
-class Team:
+class Team(BaseModel):
+    name: str
+    seed: int
+    code_name: str
+    odds_api_name: str
+    original_position: int
 
-    def __init__(self, name, seed, code_name, odds_api_name, original_position):
-        self.name = name
-        self.seed = seed
-        self.code_name = code_name
-        self.odds_api_name = odds_api_name
-        self.original_position = original_position
 
-class Participant:
-
-    def __init__(self, name, team):
-        self.name = name
-        self.team = team
-        self.is_in = True
-        self.history = []
+class Participant(BaseModel):
+    name: str
+    team: Team
+    is_in: bool = True
 
     def to_str(self):
         return f"Name: {self.name}\tTeam: {self.team.name}\tStill In? {self.is_in}"
 
 
-class Event:
+class Event(BaseModel):
+    # round is an integer from 1 to math.log2(len(participants))
+    round: int
+    event_id: int
 
-    def __init__(self, round, event_id,
-                 left=None, right=None, parent=None,
-                 home_participant=None, away_participant=None
-                 ):
-        
-        # round is an integer from 1 to math.log2(len(participants))
-        self.round = round
-        self.event_id = event_id
+    # only non-null after the previous round's game is complete
+    home_participant: Optional[Participant] = None
+    away_participant: Optional[Participant] = None
+    
+    # children event "nodes" from previous round
+    left: Optional[Event] = None
+    right: Optional[Event] = None
 
-        # participants are only initialized for opening events because future matchups depend on previous results
-        # home_participant will always be the winning_participant of the left event if one exists
-        # thus, an event is either initalized with:
-        #    1) home and away participants, if it's an opening event, OR
-        #    2) left and right child events, if it's a future event
-        assert (
-            (home_participant is not None and away_participant is not None) or
-            (left is not None and right is not None)
+    # Everything below to populate as events occur:
+    # spread info
+    spread: Optional[Dict[str, float]] = None
+    spread_final: bool = False
+
+    # espn game info - score and status taken directly from their api
+    status: Literal['STATUS_SCHEDULED', 'STATUS_IN_PROGRESS', 'STATUS_HALFTIME', 'STATUS_FINAL', 'TBD'] = 'TBD'
+    team_to_score: Dict[str, int] = {}  # dictionary of team code to integer
+    is_complete: bool = False
+    winning_participant: Optional[Participant] = None
+    winning_team_code: Optional[str] = None
+
+    # example format: datetime(2024, 4, 1, 14, 0)  for event on on April 1, 2024, at 14:00
+    estimated_start_time: Optional[datetime] = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # define the parent pointer privately so it's ignored by pydantic.
+        # otherwise, this would lead to a circular reference and ultimately 
+        # an infinite loop upon attempting to dump to the pydantic model to json or whatever
+        self._parent = None
+    
+    @classmethod
+    def first_round_event(cls, event_id, home_participant, away_participant):
+        return cls(
+                round=1,
+                event_id=event_id,
+                home_participant=home_participant,
+                away_participant=away_participant,
         )
-        self.home_participant = home_participant
-        self.away_participant = away_participant
 
-        # an event is a node in a binary tree, where the next event is the "parent" node
-        self.parent = parent
-        self.left = left
-        self.right = right
-
-        # to populate as events occur:
-        # spread info
-        self.spread = None
-        self.spread_final = False
-
-        # espn game info: events can have 1 of 4 states:
-        # 'STATUS_SCHEDULED', 'STATUS_FINAL', 'STATUS_IN_PROGRESS', 'TBD' (by default)
-        self.status = 'TBD'
-        self.team_to_score = {}  # dictionary of team code to integer
-        self.is_complete = False
-        self.winning_participant = None
-        self.winning_team = None
-
-
-        # example format: datetime(2024, 4, 1, 14, 0)  for event on on April 1, 2024, at 14:00
-        self.estimated_start_time = None
+    @classmethod
+    def from_children(cls, event_id, left, right):
+        return cls(
+            round=left.round + 1,
+            event_id=event_id,
+            left=left,
+            right=right
+        )
 
     @property
     def matchup_tuple(self):
@@ -133,9 +140,9 @@ class Event:
             losing_team = self.home_participant.team if self.winning_participant is self.away_participant else self.away_participant.team
             if self.winning_participant.team.code_name != winning_team_code:
                 self.winning_participant.team = losing_team
-            self.winning_team = winning_team_code
-            if self.parent is not None:
-                self.parent.update_from_child(self)
+            self.winning_team_code = winning_team_code
+            if self._parent is not None:
+                self._parent.update_from_child(self)
     
     def determine_winning_participant(self):
         home_score = float(self.team_to_score[self.home_participant.team.code_name])
@@ -185,6 +192,7 @@ class Event:
         spread_str = ""
         if self.spread is not None:
             for k, v in self.spread.items():
+                # only show the handicapped team
                 if v < 0:
                     spread_str = f"{k} {v}"
         key_value_strings = (f'Event #: {self.event_id}', f'{home_str} vs. {away_str}',
@@ -202,76 +210,95 @@ class Event:
             return '\t'.join(key_value_strings)
 
 
-class Bracket:
+class BracketCSVColumn(Enum):
+    PARTICIPANT_NAME_COL = 'participant_name'
+    TEAM_NAME_COL = 'team_name'
+    SEED_COL = 'seed'
+    CODE_NAME_COL = 'team_code'
+    ODDS_API_TEAM_NAME_COL = 'odds_api_team_name'
 
-    class BracketCSVColumn(Enum):
-        PARTICIPANT_NAME_COL = 'participant_name'
-        TEAM_NAME_COL = 'team_name'
-        SEED_COL = 'seed'
-        CODE_NAME_COL = 'team_code'
-        ODDS_API_TEAM_NAME_COL = 'odds_api_team_name'
 
-    REQUIRED_KEYS = [key.value for key in BracketCSVColumn]
-    SPREAD_CACHE_FILE = './.spread_cache.pkl'
+REQUIRED_KEYS = [key.value for key in BracketCSVColumn]
+SPREAD_CACHE_FILE = './.spread_cache.pkl'
+
+
+class Bracket(BaseModel):
+
+    participants: List[Participant]
+
+    n_rounds: int
+    n_unique_events: int
+
+    bracket_root: Event
+
+    # failure mode tracking
+    calls_to_espn: int = 0
+    calls_to_odds_api: int = 0
+    successfully_updating: bool = True
+    last_successful_update: Optional[datetime] = None
+    last_attempted_update: Optional[datetime] = None
+
+
+
 
     def __init__(self, participants, odds_api_key, cache_spread=True):
         # validate bracket -- currently only works with "even" brackets (e.g., 2, 4, 8, ... participants)
         assert math.log2(len(participants)).is_integer(), f'Only "evenly sized brackets (those with 4, 8, 16 ... 2^n participants.) ' +\
             f'are supported, but you have entered {len(participants)} participants.'
         assert len(participants) >= 4, f"Must have at least 4 participants, but you have {len(participants)}."
-        self.participants = participants
-        self.odds_api_key = odds_api_key
 
         # a bracket will be represented by a binary tree, and will be processed from the "bottom up" as games occur
-        self.n_rounds = int(math.log2(len(participants)))
-        self.results = [[]]
+        n_rounds = int(math.log2(len(participants)))
 
         # initialize first round of "events", assumes they are in "seeded" order, i.e.,
         # the first 2 participants will play eachother first, the winner of those 2 will play the winner of the next 2 and so on...
         ordered_events = []
-        self.unique_events = 0
-        for i in range(0, len(participants), 2):
-            ordered_events.append(Event(
-                round=1,
-                event_id=self.unique_events+1,
+        for event_number, i in enumerate(range(0, len(participants), 2)):
+            ordered_events.append(Event.first_round_event(
+                event_id=event_number+1,  # id events by order in list, 1-indexed
                 home_participant=participants[i],
                 away_participant=participants[i+1],
             ))
-            self.unique_events += 1
 
         # a bracket is represented by the root of a binary tree of events
-        self.events_to_process = self.connect_bracket(ordered_events)
-        assert len(self.events_to_process) == sum([2**n for n in range(self.n_rounds)])
-        # print(f'\n\n{len(self.events_to_process)}\n\n')
-        self.bracket_root = self.events_to_process[-1]  # last event will be the "root" or championship
+        events_to_process = Bracket.connect_bracket(ordered_events)
+        for i in range(len(events_to_process)):
+            assert events_to_process[i].event_id == i+1
+            
+        assert len(events_to_process) == sum([2**n for n in range(n_rounds)])
+        bracket_root = events_to_process[-1]  # last event will be the "root" or championship
 
-        # failure mode tracking
-        self.calls_to_espn = 0
-        self.calls_to_odds_api = 0
-        self.successfully_updating = True
-        self.last_successful_update = None
-        self.last_attempted_update = None
+        super().__init__(
+            participants=participants,
+            n_rounds=n_rounds,
+            n_unique_events=len(events_to_process),
+            bracket_root=bracket_root,
+        )
+        
+        
+        # construct "private" attributes that pydantic don't need to know 'bout
+        # all this stuff has to happen after the pydantic super class is initialized
+        self._events_to_process = events_to_process
+        self._odds_api_key = odds_api_key
 
         # dedicated thread for the loop that updates bracket state indefinitely
         self._stop_event = threading.Event()
-        self.update_thread = threading.Thread(target=self.process_indefinitely)
-        self.update_thread.daemon = True  # Set the thread as daemon so it stops when we interrupt the process
+        self._update_thread = threading.Thread(target=self.process_indefinitely)
+        self._update_thread.daemon = True  # Set the thread as daemon so it stops when we interrupt the process
 
         # Read/write odds from/to disk when available to avoid extra api calls
         # and slow startup time to pre-populate bracket. Will only cache spreads that are
         # final, i.e., games that have at least started alread. Useful when debugging :)
+        self._cache_spread = cache_spread
         if cache_spread:
-            self.cache_spread = True
             LOGGER.info("Using spread cache!")
-            if os.path.exists(self.SPREAD_CACHE_FILE):
-                LOGGER.info(f"Existing cache file found at: {self.SPREAD_CACHE_FILE}")
-                with open(self.SPREAD_CACHE_FILE, 'rb') as f:
-                    self.matchup_to_spread = pickle.load(f)
+            if os.path.exists(SPREAD_CACHE_FILE):
+                LOGGER.info(f"Existing cache file found at: {SPREAD_CACHE_FILE}")
+                with open(SPREAD_CACHE_FILE, 'rb') as f:
+                    self._matchup_to_spread = pickle.load(f)
             else:
-                LOGGER.info(f"No cache file found at: {self.SPREAD_CACHE_FILE}. Creating one!")
-                self.matchup_to_spread = {}
-        else:
-            self.cache_spread = False
+                LOGGER.info(f"No cache file found at: {SPREAD_CACHE_FILE}. Creating one!")
+                self._matchup_to_spread = {}
     
     def get_state_metadata(self):
         return {
@@ -280,34 +307,45 @@ class Bracket:
             'is_successfully_updating': self.successfully_updating,
             'last_successful_update': str(self.last_successful_update),
             'last_attempted_update': str(self.last_attempted_update),
-            'total_games_in_bracket': self.unique_events,
-            'total_games_incomplete': len(self.events_to_process),
+            'total_games_in_bracket': self.n_unique_events,
+            'total_games_incomplete': len(self._events_to_process),
         }
+    
 
     @property
     def events_in_progress(self):
-        return [event for event in self.events_to_process if event.status == 'STATUS_IN_PROGRESS']
+        return [event for event in self._events_to_process if event.status == 'STATUS_IN_PROGRESS']
 
     def write_spreads_to_disk(self):
-        if self.cache_spread:
-            with open(self.SPREAD_CACHE_FILE, 'wb') as f:
-                pickle.dump(self.matchup_to_spread, f)
+        if self._cache_spread:
+            with open(SPREAD_CACHE_FILE, 'wb') as f:
+                pickle.dump(self._matchup_to_spread, f)
     
-    def connect_bracket(self, ordered_events):
-        events_in_round = ordered_events
+    @staticmethod
+    def connect_bracket(initial_ordered_events):
+        """
+        Assumes initial_ordered_events is the list of games such that the winner of the first two
+        events in the list will play each other... and so on.
+        """
+        events_in_round = initial_ordered_events
         all_events = []
+        event_number = len(initial_ordered_events)
         while len(events_in_round) > 1:
             assert len(events_in_round) % 2 == 0  # even number of matches in all rounds except the championship
             next_round_events = []
-            all_events += events_in_round  # for returning the list of all outstanding events 
+            all_events += events_in_round  # add to list of all outstanding events
             for i in range(0, len(events_in_round), 2):
                 left, right = events_in_round[i], events_in_round[i+1]
                 assert left.round == right.round
                 # initialize "parent" event in next round and connect to left and right children
-                parent_event = Event(round=left.round + 1, event_id=self.unique_events+1, left=left, right=right)
-                self.unique_events += 1  # don't forget to increment the number of events so they're properly ID'ed
-                left.parent = parent_event
-                right.parent = parent_event
+                parent_event = Event.from_children(
+                    event_id=event_number+1,
+                    left=left,
+                    right=right
+                )
+                event_number += 1
+                left._parent = parent_event
+                right._parent = parent_event
                 next_round_events.append(parent_event)
             events_in_round = next_round_events
         assert len(events_in_round) == 1  # only root node (championship) should remain
@@ -334,8 +372,8 @@ class Bracket:
         return event_data_by_matchup_tuple
 
     def set_event_spread(self, event, date_str):
-        if self.cache_spread and event.matchup_tuple in self.matchup_to_spread:
-                spread = self.matchup_to_spread[event.matchup_tuple]
+        if self._cache_spread and event.matchup_tuple in self._matchup_to_spread:
+                spread = self._matchup_to_spread[event.matchup_tuple]
         else:
             # call odds api
             spread = self.get_spread(event, date_str)
@@ -346,10 +384,10 @@ class Bracket:
                 event.spread_final = True
         
         # maybe write new spread to cache
-        if self.cache_spread:
-            if event.matchup_tuple not in self.matchup_to_spread and spread is not None:
+        if self._cache_spread:
+            if event.matchup_tuple not in self._matchup_to_spread and spread is not None:
             # avoid caching spreads that were not found for some reason, just incase...
-                self.matchup_to_spread[event.matchup_tuple] = spread
+                self._matchup_to_spread[event.matchup_tuple] = spread
                 self.write_spreads_to_disk()
 
 
@@ -379,7 +417,7 @@ class Bracket:
         # using historical odds api everywhere as it seems to still work for future events, in which case grabs the latest snapshot
         spreads_past = requests.get(
             f'https://api.the-odds-api.com/v4/historical/sports/basketball_ncaab/odds?' +\
-            f'apiKey={self.odds_api_key}&regions=us&markets=spreads&dateFormat=iso&oddsFormat=american&date={date_str}'
+            f'apiKey={self._odds_api_key}&regions=us&markets=spreads&dateFormat=iso&oddsFormat=american&date={date_str}'
         ).json()
         self.calls_to_odds_api += 1
         spreads = []
@@ -408,7 +446,7 @@ class Bracket:
         # that break things ...
         event_data_by_matchup_tuple = self.get_score_data(f'{year}03')
         # maintain a queue of events that have home + away teams determined
-        determined_events = deque([event for event in self.events_to_process if event.matchup_determined])
+        determined_events = deque([event for event in self._events_to_process if event.matchup_determined])
         while len(determined_events) > 0:
             event = determined_events.popleft()
             if event.matchup_tuple in event_data_by_matchup_tuple:
@@ -431,10 +469,10 @@ class Bracket:
                         
                 # the above update function will update the parent once games are over,
                 # so let's check if the next round's game is determined and add it to the queue if so
-                if event.parent.matchup_determined:
-                    determined_events.append(event.parent)
+                if event._parent.matchup_determined:
+                    determined_events.append(event._parent)
                 if event.is_complete:
-                    self.events_to_process.remove(event)
+                    self._events_to_process.remove(event)
         return
 
     @staticmethod
@@ -454,30 +492,31 @@ class Bracket:
     
     def should_query(self):
         events_starting_soon = [
-            event for event in self.events_to_process if event.is_starting_within_the_hour
+            event for event in self._events_to_process if event.is_starting_within_the_hour
             and event.status == 'STATUS_SCHEDULED'
         ]
         return len(self.events_in_progress) > 0 and len(events_starting_soon) > 0
     
     def stop(self):
         self._stop_event.set()
-        self.update_thread.join()
+        self._update_thread.join()
     
     def start(self):
-        self.update_thread.start()
+        self._update_thread.start()
     
     def process_indefinitely(self):
-        while self.events_to_process and not self._stop_event.is_set():
+        while self._events_to_process and not self._stop_event.is_set():
             if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested 
                 events_to_remove = []
                 try:
                     current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())
                     events_to_remove = []
-                    for event in self.events_to_process:
+                    for event in self._events_to_process:
                         # update
                         if event.matchup_determined and event.matchup_tuple in current_event_data_by_matchup_tuple:
                             event_data = current_event_data_by_matchup_tuple[event.matchup_tuple]
                             # FIXME: if the game's available in ESPN much before odds-api, will this result in tons of API calls?
+                            # So far it seems like they are available at nearly the same time.
                             if event.spread is None:
                                 # populate initial spread 
                                 time_before_game = (datetime.strptime(event_data['date'], '%Y-%m-%dT%H:%MZ') - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -505,7 +544,7 @@ class Bracket:
             
                 # remove events that completed this iteration
                 for event in events_to_remove:
-                    self.events_to_process.remove(event)
+                    self._events_to_process.remove(event)
 
                 self.last_attempted_update = datetime.now()
             # Sleep for 60 seconds, but check for stop event every second
@@ -556,22 +595,25 @@ class Bracket:
         return bracket_as_str
     
     def pretty_print(self):
-        print(self.to_str())   
+        print(self.to_str())
 
     @classmethod
-    def from_config(cls, config):
+    def from_config(cls, config, cache_spread=True):
         odds_api_key = config['ODDS_API_KEY']
         participant_df = pd.read_csv(config['TEAM_CSV_PATH'])
-        assert all([key in participant_df.columns for key in cls.REQUIRED_KEYS])
+        assert all([key in participant_df.columns for key in REQUIRED_KEYS])
         participants = []
         for i, row in participant_df.iterrows():
             team = Team(
-                row[cls.BracketCSVColumn.TEAM_NAME_COL.value],
-                row[cls.BracketCSVColumn.SEED_COL.value],
-                row[cls.BracketCSVColumn.CODE_NAME_COL.value],
-                row[cls.BracketCSVColumn.ODDS_API_TEAM_NAME_COL.value],
-            original_position=i,
+                name=row[BracketCSVColumn.TEAM_NAME_COL.value],
+                seed=row[BracketCSVColumn.SEED_COL.value],
+                code_name=row[BracketCSVColumn.CODE_NAME_COL.value],
+                odds_api_name=row[BracketCSVColumn.ODDS_API_TEAM_NAME_COL.value],
+                original_position=i,
             )
-            participant = Participant(row[cls.BracketCSVColumn.PARTICIPANT_NAME_COL.value], team)
+            participant = Participant(
+                name=row[BracketCSVColumn.PARTICIPANT_NAME_COL.value],
+                team=team
+            )
             participants.append(participant)
-        return cls(participants, odds_api_key)
+        return cls(participants, odds_api_key, cache_spread=cache_spread)
