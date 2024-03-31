@@ -18,6 +18,12 @@ uvicorn run_server:app
 
 Navigate to http://127.0.0.1:8000/api/print-bracket to view the current bracket! It currently makes an API call to ESPN every minute, and only calls odds API for each game once upon scheduling, and again as soon as the game begins to try to get the opening spread.
 
+## Endpoints
+`/api/print-bracket`:
+- prints the bracket as HTML
+
+`/api/bracket-as-json`:
+- returns the bracket as nested json, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L225-L239). Importantly, `"bracket"` is the root node (or `Event`) of the tree, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L49-L72). This json is huge, open up chrome with "pretty-print" on your local host here: http://127.0.0.1:8000/api/bracket-as-json (also currently available on an ec2 machine here: http://ec2-18-208-184-64.compute-1.amazonaws.com/api/bracket-as-json, but prob not for long).
 
 ## How do we get scores and lines?
 [ESPN API](https://github.com/pseudo-r/Public-ESPN-API) for scores. Looking at [odds-api](https://the-odds-api.com/) for lines.
@@ -26,6 +32,6 @@ Navigate to http://127.0.0.1:8000/api/print-bracket to view the current bracket!
 ## TODO
 - [ ] Add UI, ideally from [here](https://github.com/Drarig29/brackets-viewer.js?tab=readme-ov-file), but I don't know javascript 🤡. I assume we just need this app to return the bracket in json form compatible with the dude's [model](https://github.com/Drarig29/brackets-model).
 - [ ] Clean up and test updating logic
-- [ ] Deploy to ☁️
+- [ ] Add script to run on ☁️
 - [ ] 1 million other things in my life
 - [ ] Add UI for bracket creation so that user doesn't need to provide a CSV file
