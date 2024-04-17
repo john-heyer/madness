@@ -40,11 +40,18 @@ class Team(BaseModel):
 class Participant(BaseModel):
     name: str
     team: Team
-    is_in: bool = True
+    is_in: bool = True  # TODO: update this
 
     def to_str(self):
         return f"Name: {self.name}\tTeam: {self.team.name}\tStill In? {self.is_in}"
 
+    @classmethod
+    def with_new_team(cls, existing_participant, new_team):
+        return Participant(
+            name=existing_participant.name,
+            team=new_team,
+            is_in=existing_participant.is_in,
+        )
 
 class Event(BaseModel):
     # round is an integer from 1 to math.log2(len(participants))
@@ -54,10 +61,6 @@ class Event(BaseModel):
     # only non-null after the previous round's game is complete
     home_participant: Optional[Participant] = None
     away_participant: Optional[Participant] = None
-    
-    # children event "nodes" from previous round
-    left: Optional[Event] = None
-    right: Optional[Event] = None
 
     # Everything below to populate as events occur:
     # spread info
@@ -71,14 +74,22 @@ class Event(BaseModel):
     winning_participant: Optional[Participant] = None
     winning_team_code: Optional[str] = None
 
-    # example format: datetime(2024, 4, 1, 14, 0)  for event on on April 1, 2024, at 14:00
+    # example format: datetime(2024, 4, 1, 14, 0) for event on on April 1, 2024, at 14:00
     estimated_start_time: Optional[datetime] = None
+
+    # ===================================================================================================
+    # (put new attributes above this, so child nodes are dumped to JSON last by pydantic for readability)
+    # ===================================================================================================
+
+    # children event "nodes" from previous round
+    left: Optional[Event] = None
+    right: Optional[Event] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # define the parent pointer privately so it's ignored by pydantic.
         # otherwise, this would lead to a circular reference and ultimately 
-        # an infinite loop upon attempting to dump to the pydantic model to json or whatever
+        # an infinite loop upon attempting to dump the pydantic model to json or whatever
         self._parent = None
     
     @classmethod
@@ -135,14 +146,15 @@ class Event(BaseModel):
             self.team_to_score = team_to_score
         self.is_complete = api_event_data['status']['type']['completed']
         if self.is_complete:
+            # assert winning_team_code is not None  # TODO - this was null after the championship, causing the winner to adopt the losing team 
             self.winning_participant = self.determine_winning_participant()
             # optionally update the winning participant's team if their team lost but covered
-            losing_team = self.home_participant.team if self.winning_participant is self.away_participant else self.away_participant.team
+            winners_new_team = None
             if self.winning_participant.team.code_name != winning_team_code:
-                self.winning_participant.team = losing_team
+                winners_new_team = self.home_participant.team if self.winning_participant is self.away_participant else self.away_participant.team
             self.winning_team_code = winning_team_code
             if self._parent is not None:
-                self._parent.update_from_child(self)
+                self._parent.update_from_child(self, winners_new_team)
     
     def determine_winning_participant(self):
         home_score = float(self.team_to_score[self.home_participant.team.code_name])
@@ -156,14 +168,20 @@ class Event(BaseModel):
             # spread was even, return underdog
             return self.home_participant if home_score_delta > 0 else self.away_participant  
     
-    def update_from_child(self, child):
+    def update_from_child(self, child, winners_new_team=None):
         assert child.winning_participant is not None
+        if winners_new_team is not None:
+            # if the winning participant is adopting the loser's team, create a new participant to avoid
+            # mutating the participant directly, so previous events referencing this participant remain valid
+            winning_participant = Participant.with_new_team(child.winning_participant, winners_new_team) 
+        else:
+            winning_participant = child.winning_participant
         # update either the left or right child depending on which one was provided upon completion
         if child is self.left:
-            self.home_participant = child.winning_participant
+            self.home_participant = winning_participant
         else:
             assert child is self.right
-            self.away_participant = child.winning_participant
+            self.away_participant = winning_participant
 
     def to_str(self, as_html=False):
         if self.home_participant is not None:
@@ -360,7 +378,7 @@ class Bracket(BaseModel):
             f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date_str}'
         ).json()
         LOGGER.info(f'Data for {len(data["events"])} events returned.')
-        # pre-process this data to make it query-able via two team codes
+        # pre-process this data to make it query-able via two-team code tuples
         event_data_by_matchup_tuple = {}
         for event_data in data['events']:
             matchup_tuple = tuple(sorted(event_data['shortName'].split(' VS ')))
@@ -506,7 +524,7 @@ class Bracket(BaseModel):
     
     def process_indefinitely(self):
         while self._events_to_process and not self._stop_event.is_set():
-            if True:  # self.should_query(): TODO - add this optimization to significantly reduce api calls once status stuff tested 
+            if True:  # self.should_query(): TODO - add this optimization to significantly reduce esnp api calls once status stuff tested 
                 events_to_remove = []
                 try:
                     current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())

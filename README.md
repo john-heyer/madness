@@ -33,5 +33,7 @@ Navigate to http://127.0.0.1:8000/api/print-bracket to view the current bracket!
 - [ ] Add UI, ideally from [here](https://github.com/Drarig29/brackets-viewer.js?tab=readme-ov-file), but I don't know javascript 🤡. I assume we just need this app to return the bracket in json form compatible with the dude's [model](https://github.com/Drarig29/brackets-model).
 - [ ] Clean up and test updating logic
 - [ ] Add script to run on ☁️
+  - Referenced this [blog](https://medium.com/@vanyamyshkin/deploy-python-fastapi-for-free-on-aws-ec2-050b46744366) to get it running on ec2.
+  - **Note**: the `location /api ` in your nginx config must match the endpoints specified in python via FastAPI 
 - [ ] 1 million other things in my life
 - [ ] Add UI for bracket creation so that user doesn't need to provide a CSV file
