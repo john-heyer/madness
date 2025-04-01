@@ -1,0 +1,23 @@
+[project]
+name = "madness"
+version = "0.1.0"
+description = "Bracket manager for Mike's shitty march madness tournament"
+authors = [
+    {name = "John Heyer",email = "heyerjohn6@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests (>=2.32.3,<3.0.0)",
+    "pandas (>=2.2.3,<3.0.0)",
+    "ipdb (>=0.13.13,<0.14.0)",
+    "fastapi (>=0.115.12,<0.116.0)",
+    "uvicorn (>=0.34.0,<0.35.0)",
+    "python-dotenv (>=1.1.0,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
