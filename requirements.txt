@@ -1,6 +1,0 @@
-requests
-pandas
-ipdb
-fastapi
-uvicorn
-python-dotenv
