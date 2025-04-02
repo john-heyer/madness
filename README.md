@@ -109,21 +109,24 @@ Follow instructions in bracket-setup.ipynb
 
 
 ## Endpoints
+**Main bracket view**: http://ec2-54-173-62-3.compute-1.amazonaws.com/
+
 `/api/print-bracket`:
-- prints the bracket as HTML
+- prints the bracket as raw-but-prettified HTML
 
 `/api/bracket-as-json`:
-- returns the bracket as nested json, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L225-L239). Importantly, `"bracket"` is the root node (or `Event`) of the tree, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L49-L72). This json is huge, open up chrome with "pretty-print" on your local host here: http://127.0.0.1:8000/api/bracket-as-json (also currently available on an ec2 machine here: http://ec2-18-208-184-64.compute-1.amazonaws.com/api/bracket-as-json, but prob not for long).
+- returns the bracket as nested json, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L225-L239). Importantly, `"bracket"` is the root node (or `Event`) of the tree, with the fields defined [here](https://github.com/john-heyer/madness/blob/main/bracket.py#L49-L72). This json is huge, open up chrome with "pretty-print" on your local host here: http://127.0.0.1:8000/api/bracket-as-json (also currently available on an ec2 machine here: http://ec2-54-173-62-3.compute-1.amazonaws.com/, but prob not for long).
 
 ## How do we get scores and lines?
 [ESPN API](https://github.com/pseudo-r/Public-ESPN-API) for scores, [odds-api](https://the-odds-api.com/) for lines.
 
 
 ## TODO
-- [ ] Add UI, ideally from [here](https://github.com/Drarig29/brackets-viewer.js?tab=readme-ov-file), but I don't know javascript 🤡. I assume we just need this app to return the bracket in json form compatible with the dude's [model](https://github.com/Drarig29/brackets-model).
 - [ ] Clean up and test updating logic
 - [ ] Add script to run on ☁️
-  - Referenced this [blog](https://medium.com/@vanyamyshkin/deploy-python-fastapi-for-free-on-aws-ec2-050b46744366) to get it running on ec2.
-  - **Note**: the `location /api ` in your nginx config must match the endpoints specified in python via FastAPI 
+  - [ ] Using nginx only now following instructions from Claude in [chat](https://claude.ai/share/4e2b01b5-07c9-43c5-866a-9ba22e48e4a2)
+  - [ ] Need to summarize and add details so I understand next year
+  - [x] Referenced this [blog](https://medium.com/@vanyamyshkin/deploy-python-fastapi-for-free-on-aws-ec2-050b46744366) to get it running on ec2.
+  - [x] **Note**: the `location /api ` in your nginx config must match the endpoints specified in python via FastAPI 
 - [ ] 1 million other things in my life
 - [ ] Add UI for bracket creation so that user doesn't need to provide a CSV file
