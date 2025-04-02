@@ -389,7 +389,6 @@ class Bracket(BaseModel):
         Provided `date_str` must be in format "YYYYMMDD"
         Otherwise, will query current day +/- 1 day from the current time to avoid any timezone issues.
         """
-        # FIXME: instead of using date range, just query 3 days and concatenate results here
         if date_str:
             data = requests.get(
                 f'https://site.api.espn.com/' +\
