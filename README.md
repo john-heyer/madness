@@ -121,12 +121,73 @@ Follow instructions in bracket-setup.ipynb
 [ESPN API](https://github.com/pseudo-r/Public-ESPN-API) for scores, [odds-api](https://the-odds-api.com/) for lines.
 
 
+## Quick Reference: March Madness Bracket Setup on EC2
+### Initial Setup (Already Done)
+
+1. Connect to EC2: `ssh -i ~/.ssh/john-personal.pem ubuntu@ec2-54-173-62-3.compute-1.amazonaws.com`
+2. Install dependencies: `sudo apt update && sudo apt install nginx python3 python3-pip git`
+3. Install Poetry: `curl -sSL https://install.python-poetry.org | python3 -`
+4. Clone repo: `git clone [repository URL]`
+
+#### FastAPI App Setup
+
+1. Update environment variables (`.env` file)
+2. Install dependencies: `cd madness && poetry install`
+3. Create systemd service:
+```bash
+sudo nano /etc/systemd/system/bracket-tracker.service
+# Add service config
+sudo systemctl enable bracket-tracker
+sudo systemctl start bracket-tracker
+```
+
+#### Nginx Configuration
+
+1. Create Nginx config:
+```bash
+sudo nano /etc/nginx/sites-available/bracket
+# Add server config with proxy to FastAPI (should be there already)
+```
+2. Enable site:
+```bash
+sudo ln -s /etc/nginx/sites-available/bracket /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+```
+
+3. Check config: `sudo nginx -t`
+4. Restart Nginx: `sudo systemctl restart nginx`
+5. Ensure nginx can access static files:
+```bash
+sudo chmod 755 /home/ubuntu/madness/static
+sudo chmod 644 /home/ubuntu/madness/static/styles.css
+```
+
+### For Next Year (Refresh Process)
+
+1. Reboot and connect to EC2: `ssh -i ~/.ssh/john-personal.pem ubuntu@ec2-54-173-62-3.compute-1.amazonaws.com`
+2. Pull latest code: `cd madness && git pull`
+3. Update dependencies: `poetry install`
+5. Restart services:
+```bash
+sudo systemctl restart bracket-tracker
+sudo systemctl restart nginx
+```
+
+6. Confirm app is running: http://your-ec2-ip/
+
+### Common Troubleshooting
+
+1. Check FastAPI logs: `sudo journalctl -u bracket-tracker -f`
+2. Check Nginx logs: `sudo tail -f /var/log/nginx/error.log`
+3. Check permissions if CSS not loading
+4. Test direct access: `curl http://localhost:8000/`
+
+#### References
+* Claude [chat](https://claude.ai/share/4e2b01b5-07c9-43c5-866a-9ba22e48e4a2)
+* Originally followed this [blog](https://medium.com/@vanyamyshkin/deploy-python-fastapi-for-free-on-aws-ec2-050b46744366) to get it running on ec2.
+
 ## TODO
 - [ ] Clean up and test updating logic
-- [ ] Add script to run on ☁️
-  - [ ] Using nginx only now following instructions from Claude in [chat](https://claude.ai/share/4e2b01b5-07c9-43c5-866a-9ba22e48e4a2)
-  - [ ] Need to summarize and add details so I understand next year
-  - [x] Referenced this [blog](https://medium.com/@vanyamyshkin/deploy-python-fastapi-for-free-on-aws-ec2-050b46744366) to get it running on ec2.
-  - [x] **Note**: the `location /api ` in your nginx config must match the endpoints specified in python via FastAPI 
+- [ ] Add script to re-deploy on ☁️
 - [ ] 1 million other things in my life
 - [ ] Add UI for bracket creation so that user doesn't need to provide a CSV file
