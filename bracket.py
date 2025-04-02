@@ -369,18 +369,47 @@ class Bracket(BaseModel):
         assert len(events_in_round) == 1  # only root node (championship) should remain
         return deque(all_events + events_in_round)
 
+    @staticmethod
+    def current_date_range_str():
+        """
+        Given the current time, we need to query for games yesterday/today/tomorrow,
+        to avoid any timezone issues. The ESPN API expects a string formatted like this:
+        YYYYMMDD-YYYYMMDD, but results are exclusive of the end date, so we format  the
+        range from yesterday to 2 days from now.
+        """
+        current_date = datetime.now().date()
+        start_date = current_date - timedelta(days=1)
+        end_date = current_date + timedelta(days=2)
+        start_date_str = start_date.strftime("%Y%m%d")
+        end_date_str = end_date.strftime("%Y%m%d")
+        return f"{start_date_str}-{end_date_str}"
+
     def get_score_data(self, date_str=None):
         """
-        date_str in format "YYYYMMDD"
+        Provided `date_str` must be in format "YYYYMMDD"
+        Otherwise, will query current day +/- 1 day from the current time to avoid any timezone issues.
         """
-        data = requests.get(
-            f'https://site.api.espn.com/' +\
-            f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date_str}'
-        ).json()
-        LOGGER.info(f'Data for {len(data["events"])} events returned.')
+        # FIXME: instead of using date range, just query 3 days and concatenate results here
+        if date_str:
+            data = requests.get(
+                f'https://site.api.espn.com/' +\
+                f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date_str}'
+            ).json()['events']
+        else:
+            current_date = datetime.now().date()
+            yesterday_date = current_date - timedelta(days=1)
+            tomorrow_date = current_date + timedelta(days=1)
+            data = []
+            for date in (yesterday_date, current_date, tomorrow_date):
+                data += requests.get(
+                    f'https://site.api.espn.com/' +\
+                    f'apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates={date.strftime("%Y%m%d")}'
+                ).json()['events']
+            
+        LOGGER.info(f'Data for {len(data)} events returned.')
         # pre-process this data to make it query-able via two-team code tuples
         event_data_by_matchup_tuple = {}
-        for event_data in data['events']:
+        for event_data in data:
             matchup_tuple = tuple(sorted(event_data['shortName'].split(' VS ')))
             if matchup_tuple == ('TBD', 'TBD'):
                 continue
@@ -396,6 +425,7 @@ class Bracket(BaseModel):
             # call odds api
             spread = self.get_spread(event, date_str)
         event.spread = spread
+        print(f"Spread: {spread}")
             
         # if this event has already began, we can consider this spread final 
         if event.status == 'STATUS_FINAL' or event.status == 'STATUS_IN_PROGRESS':
@@ -454,7 +484,7 @@ class Bracket(BaseModel):
         # Wanted to query march + april with {year}0301-{year}0501, but this breaks things
         # because some earlier games are returned with shortName format "X @ Y" instead of 
         # the assumed "X VS Y". Could fix, but the larger issue is the weird behavior in the
-        # set of games returned. I though querying for "202403" returned all games in march, 
+        # set of games returned. I thought querying for "202403" returned all games in march, 
         # but for some reason it returns only games from 3/20-3/30 right now (62 games).
         # On the other hand, querying "20240301-20240501" hits the apparent "limit" of 100 games, but
         # returns games from 3/01 - 3/09. I guess when a range is provided, it returns the games in
@@ -465,14 +495,17 @@ class Bracket(BaseModel):
         event_data_by_matchup_tuple = self.get_score_data(f'{year}03')
         # maintain a queue of events that have home + away teams determined
         determined_events = deque([event for event in self._events_to_process if event.matchup_determined])
+        print(f"Found {len(determined_events)} determined events")
         while len(determined_events) > 0:
             event = determined_events.popleft()
             if event.matchup_tuple in event_data_by_matchup_tuple:
+                print(f"Got score for this event: {event}")
                 event_data = event_data_by_matchup_tuple[event.matchup_tuple]
                 # FIXME: if the game's available in ESPN much before odds-api, will this result in tons of API calls?
                 if event.spread is None:
                     # populate initial spread 
                     time_before_game = (datetime.strptime(event_data['date'], '%Y-%m-%dT%H:%MZ') - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    print(f"Found event: {event}")
                     self.set_event_spread(event, time_before_game)
                 # maybe update
                 old_status = event.status
@@ -492,21 +525,6 @@ class Bracket(BaseModel):
                 if event.is_complete:
                     self._events_to_process.remove(event)
         return
-
-    @staticmethod
-    def current_date_range_str():
-        """
-        Given the current time, we need to query for games yesterday/today/tomorrow,
-        to avoid any timezone issues. The ESPN API expects a string formatted like this:
-        YYYYMMDD-YYYYMMDD, but results are exclusive of the end date, so we format  the
-        range from yesterday to 2 days from now.
-        """
-        current_date = datetime.now().date()
-        start_date = current_date - timedelta(days=1)
-        end_date = current_date + timedelta(days=2)
-        start_date_str = start_date.strftime("%Y%m%d")
-        end_date_str = end_date.strftime("%Y%m%d")
-        return f"{start_date_str}-{end_date_str}"
     
     def should_query(self):
         events_starting_soon = [
@@ -524,10 +542,10 @@ class Bracket(BaseModel):
     
     def process_indefinitely(self):
         while self._events_to_process and not self._stop_event.is_set():
-            if True:  # self.should_query(): TODO - add this optimization to significantly reduce esnp api calls once status stuff tested 
+            if True:  # self.should_query(): TODO - add this optimization to significantly reduce espn api calls once status stuff tested 
                 events_to_remove = []
                 try:
-                    current_event_data_by_matchup_tuple = self.get_score_data(self.current_date_range_str())
+                    current_event_data_by_matchup_tuple = self.get_score_data()
                     events_to_remove = []
                     for event in self._events_to_process:
                         # update
