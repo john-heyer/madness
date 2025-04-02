@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>March Madness Bracket</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>March Madness Bracket Tracker</h1>
+            <div class="metadata">
+                <div class="status-card {% if metadata.is_successfully_updating %}status-ok{% else %}status-error{% endif %}">
+                    <h3>Status: {% if metadata.is_successfully_updating %}Active{% else %}Error{% endif %}</h3>
+                    <p>Last Update: {{ metadata.last_successful_update }}</p>
+                    <p>Games Complete: {{ metadata.total_games_in_bracket - metadata.total_games_incomplete }} / {{ metadata.total_games_in_bracket }}</p>
+                    <p>API Calls: ESPN ({{ metadata.calls_to_epsn }}) | Odds API ({{ metadata.calls_to_odds_api }})</p>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            {% for round_num in range(bracket.n_rounds, 0, -1) %}
+                <section class="round">
+                    <h2>{{ bracket.round_description(round_num) }}</h2>
+                    <div class="games">
+                        {% for event in bracket_data.events %}
+                            {% if event.round == round_num %}
+                                <div class="game-card">
+                                    <div class="game-header">
+                                        <span class="event-number">Event #{{ event.event_id }}</span>
+                                        <span class="status {% if event.status == 'STATUS_FINAL' %}final{% elif event.status == 'STATUS_IN_PROGRESS' or event.status == 'STATUS_HALFTIME' %}live{% else %}tbd{% endif %}">
+                                            {{ event.status.replace('STATUS_', '') }}
+                                        </span>
+                                    </div>
+                                    
+                                    <div class="matchup">
+                                        <!-- Home Team/Participant -->
+                                        <div class="team {% if event.winning_participant and event.home_participant and event.winning_participant.team.code_name == event.home_participant.team.code_name %}winner{% endif %}">
+                                            <span class="team-name">
+                                                {% if event.home_participant %}
+                                                    {{ event.home_participant.team.name }} ({{ event.home_participant.name }})
+                                                {% elif event.left %}
+                                                    Winner of Event #{{ event.left.event_id }}
+                                                {% else %}
+                                                    TBD
+                                                {% endif %}
+                                            </span>
+                                            <span class="score">
+                                                {% if event.home_participant and event.home_participant.team.code_name in event.team_to_score %}
+                                                    {{ event.team_to_score[event.home_participant.team.code_name] }}
+                                                {% else %}
+                                                    0
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                        
+                                        <!-- Away Team/Participant -->
+                                        <div class="team {% if event.winning_participant and event.away_participant and event.winning_participant.team.code_name == event.away_participant.team.code_name %}winner{% endif %}">
+                                            <span class="team-name">
+                                                {% if event.away_participant %}
+                                                    {{ event.away_participant.team.name }} ({{ event.away_participant.name }})
+                                                {% elif event.right %}
+                                                    Winner of Event #{{ event.right.event_id }}
+                                                {% else %}
+                                                    TBD
+                                                {% endif %}
+                                            </span>
+                                            <span class="score">
+                                                {% if event.away_participant and event.away_participant.team.code_name in event.team_to_score %}
+                                                    {{ event.team_to_score[event.away_participant.team.code_name] }}
+                                                {% else %}
+                                                    0
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    {% if event.spread %}
+                                    <div class="spread">
+                                        Spread: 
+                                        {% for team_name, value in event.spread.items() %}
+                                            {% if value < 0 %}
+                                                {{ team_name }} {{ value }}
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if event.estimated_start_time %}
+                                    <div class="start-time">
+                                        Start Time: {{ event.estimated_start_time.strftime('%Y-%m-%d %H:%M') }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </section>
+            {% endfor %}
+        </main>
+
+        <footer>
+            <p>Auto-updates every minute • Last updated: {{ metadata.last_successful_update }}</p>
+            <p><a href="/api/bracket-as-json" target="_blank">View JSON API</a> | <a href="/api/print-bracket" target="_blank">View Text Format</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // Auto refresh the page every minute
+        setTimeout(function() {
+            window.location.reload();
+        }, 60000);
+    </script>
+</body>
+</html>
