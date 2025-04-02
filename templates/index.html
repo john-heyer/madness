@@ -10,14 +10,6 @@
     <div class="container">
         <header>
             <h1>Mike's Stupid Fucking Bracket</h1>
-            <div class="metadata">
-                <div class="status-card {% if metadata.is_successfully_updating %}status-ok{% else %}status-error{% endif %}">
-                    <h3>Status: {% if metadata.is_successfully_updating %}Active{% else %}Error{% endif %}</h3>
-                    <p>Last Update: {{ metadata.last_successful_update }}</p>
-                    <p>Games Complete: {{ metadata.total_games_in_bracket - metadata.total_games_incomplete }} / {{ metadata.total_games_in_bracket }}</p>
-                    <p>API Calls: ESPN ({{ metadata.calls_to_epsn }}) | Odds API ({{ metadata.calls_to_odds_api }})</p>
-                </div>
-            </div>
         </header>
 
         <main>
@@ -104,7 +96,21 @@
         </main>
 
         <footer>
-            <p>Auto-updates every minute • Last updated: {{ metadata.last_successful_update }}</p>
+            <div class="metadata-footer">
+                <div class="metadata-item">
+                    <span class="status-indicator {% if metadata.is_successfully_updating %}status-active{% else %}status-error{% endif %}"></span>
+                    Status: {% if metadata.is_successfully_updating %}Active{% else %}Error{% endif %}
+                </div>
+                <div class="metadata-item">
+                    Last Update: {{ metadata.last_successful_update }}
+                </div>
+                <div class="metadata-item">
+                    Games Complete: {{ metadata.total_games_in_bracket - metadata.total_games_incomplete }} / {{ metadata.total_games_in_bracket }}
+                </div>
+                <div class="metadata-item">
+                    API Calls: ESPN ({{ metadata.calls_to_epsn }}) | Odds API ({{ metadata.calls_to_odds_api }})
+                </div>
+            </div>
             <p><a href="/api/bracket-as-json" target="_blank">View JSON API</a> | <a href="/api/print-bracket" target="_blank">View Text Format</a></p>
         </footer>
     </div>
