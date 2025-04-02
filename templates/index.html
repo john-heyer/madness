@@ -9,7 +9,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>March Madness Bracket Tracker</h1>
+            <h1>Mike's Stupid Fucking Bracket</h1>
             <div class="metadata">
                 <div class="status-card {% if metadata.is_successfully_updating %}status-ok{% else %}status-error{% endif %}">
                     <h3>Status: {% if metadata.is_successfully_updating %}Active{% else %}Error{% endif %}</h3>
@@ -21,13 +21,20 @@
         </header>
 
         <main>
-            {% for round_num in range(bracket.n_rounds, 0, -1) %}
-                <section class="round">
-                    <h2>{{ bracket.round_description(round_num) }}</h2>
-                    <div class="games">
+            <div class="tabs">
+                {% for r in range(1, bracket.n_rounds + 1) %}
+                    <div class="tab" data-tab="{{ r }}">
+                        {{ bracket.round_description(r) }}
+                    </div>
+                {% endfor %}
+            </div>
+            
+            {% for r in range(1, bracket.n_rounds + 1) %}
+                <div class="tab-content" data-tab-content="{{ r }}">
+                    <div class="tab-games">
                         {% for event in bracket_data.events %}
-                            {% if event.round == round_num %}
-                                <div class="game-card">
+                            {% if event.round == r %}
+                                <div class="game-card {% if r == bracket.n_rounds %}championship{% endif %}" data-event-id="{{ event.event_id }}">
                                     <div class="game-header">
                                         <span class="event-number">Event #{{ event.event_id }}</span>
                                         <span class="status {% if event.status == 'STATUS_FINAL' %}final{% elif event.status == 'STATUS_IN_PROGRESS' or event.status == 'STATUS_HALFTIME' %}live{% else %}tbd{% endif %}">
@@ -38,15 +45,16 @@
                                     <div class="matchup">
                                         <!-- Home Team/Participant -->
                                         <div class="team {% if event.winning_participant and event.home_participant and event.winning_participant.team.code_name == event.home_participant.team.code_name %}winner{% endif %}">
-                                            <span class="team-name">
+                                            <div class="team-info">
                                                 {% if event.home_participant %}
-                                                    {{ event.home_participant.team.name }} ({{ event.home_participant.name }})
+                                                    <span class="team-name">{{ event.home_participant.team.name }}</span>
+                                                    <span class="participant-name">{{ event.home_participant.name }}</span>
                                                 {% elif event.left %}
-                                                    Winner of Event #{{ event.left.event_id }}
+                                                    <span class="team-name">Winner of #{{ event.left.event_id }}</span>
                                                 {% else %}
-                                                    TBD
+                                                    <span class="team-name">TBD</span>
                                                 {% endif %}
-                                            </span>
+                                            </div>
                                             <span class="score">
                                                 {% if event.home_participant and event.home_participant.team.code_name in event.team_to_score %}
                                                     {{ event.team_to_score[event.home_participant.team.code_name] }}
@@ -58,15 +66,16 @@
                                         
                                         <!-- Away Team/Participant -->
                                         <div class="team {% if event.winning_participant and event.away_participant and event.winning_participant.team.code_name == event.away_participant.team.code_name %}winner{% endif %}">
-                                            <span class="team-name">
+                                            <div class="team-info">
                                                 {% if event.away_participant %}
-                                                    {{ event.away_participant.team.name }} ({{ event.away_participant.name }})
+                                                    <span class="team-name">{{ event.away_participant.team.name }}</span>
+                                                    <span class="participant-name">{{ event.away_participant.name }}</span>
                                                 {% elif event.right %}
-                                                    Winner of Event #{{ event.right.event_id }}
+                                                    <span class="team-name">Winner of #{{ event.right.event_id }}</span>
                                                 {% else %}
-                                                    TBD
+                                                    <span class="team-name">TBD</span>
                                                 {% endif %}
-                                            </span>
+                                            </div>
                                             <span class="score">
                                                 {% if event.away_participant and event.away_participant.team.code_name in event.team_to_score %}
                                                     {{ event.team_to_score[event.away_participant.team.code_name] }}
@@ -79,7 +88,6 @@
                                     
                                     {% if event.spread %}
                                     <div class="spread">
-                                        Spread: 
                                         {% for team_name, value in event.spread.items() %}
                                             {% if value < 0 %}
                                                 {{ team_name }} {{ value }}
@@ -87,17 +95,11 @@
                                         {% endfor %}
                                     </div>
                                     {% endif %}
-                                    
-                                    {% if event.estimated_start_time %}
-                                    <div class="start-time">
-                                        Start Time: {{ event.estimated_start_time.strftime('%Y-%m-%d %H:%M') }}
-                                    </div>
-                                    {% endif %}
                                 </div>
                             {% endif %}
                         {% endfor %}
                     </div>
-                </section>
+                </div>
             {% endfor %}
         </main>
 
@@ -108,7 +110,44 @@
     </div>
 
     <script>
-        // Auto refresh the page every minute
+        // Tab functionality with localStorage persistence
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        
+        // Try to get the active tab from localStorage, default to 3 (Quarter-Finals)
+        const savedTab = localStorage.getItem('activeTab') || '3';
+        
+        // Function to activate a tab
+        function activateTab(tabId) {
+            // Remove active class from all tabs and contents
+            tabs.forEach(t => t.classList.remove('active'));
+            tabContents.forEach(c => c.classList.remove('active'));
+            
+            // Add active class to clicked tab and corresponding content
+            const tabToActivate = document.querySelector(`.tab[data-tab="${tabId}"]`);
+            const contentToActivate = document.querySelector(`[data-tab-content="${tabId}"]`);
+            
+            if (tabToActivate && contentToActivate) {
+                tabToActivate.classList.add('active');
+                contentToActivate.classList.add('active');
+                
+                // Save to localStorage
+                localStorage.setItem('activeTab', tabId);
+            }
+        }
+        
+        // Set the initial active tab
+        activateTab(savedTab);
+        
+        // Add click handlers to all tabs
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.getAttribute('data-tab');
+                activateTab(tabId);
+            });
+        });
+        
+        // Auto refresh the page every minute while preserving the active tab
         setTimeout(function() {
             window.location.reload();
         }, 60000);
